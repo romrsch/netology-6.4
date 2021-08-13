@@ -121,24 +121,41 @@ root@postgresql:/#
 ![альт](https://i.ibb.co/zs00jnt/Screenshot-9.jpg)
 
 
-Восстановим бэкап БД в `test_database`
+Восстановим бэкап БД в нашу созданную БД `test_database` и посмотрим список таблиц.
 ```
 psql -U postgres -f /tmp/test_dump.sql  test_database
 ```
 
 ![альт](https://i.ibb.co/RCvTVZ5/Screenshot-10.jpg)
 
+
+Подключимся к восстановленной БД "test_database"
 ```
 psql -h localhost -p 5432 -U postgres -W
 postgres=# \c test_database
 ```
 ![альт](https://i.ibb.co/ftWjf5g/Screenshot-11.jpg)
 
+
+ANALYZE — собрать статистику по базе данных. 
+* ANALYZE [ VERBOSE ] [ имя_таблицы ]
 ```
 test_database=# ANALYZE VERBOSE public.orders;
+```
+Найдём столбец таблицы `orders` с наибольшим средним значением размера элементов в байтах.
 
+Представление `pg_stats` открывает доступ к информации, хранящейся в каталоге pg_statistic.
+
+Применим запрос с параметрами:
+
+* `avg_width` - Средний размер элементов в столбце, в байтах
+* `tablename`  - Имя таблицы
+
+```
 test_database=# select avg_width from pg_stats where tablename='orders';
 ```
+Скриншот работы команды `ANALYZE` и запроса с `pg_stats`
+
 ![альт](https://i.ibb.co/Y3NWLMf/Screenshot-12.jpg)
 
 ---
@@ -157,40 +174,66 @@ test_database=# select avg_width from pg_stats where tablename='orders';
 
 ***Ответ:***
 
-Нужно преобразовать существующую таблицу, а именно переименовать её.
-пересоздадим таблицу заново
-переименовывать исходную таблицу и переносить данные в новую
+Партиционирование (partitioning) — это разбиение таблиц, содержащих большое количество записей, на логические части по неким выбранным администратором критериям. Партиционирование таблиц делит весь объем операций по обработке данных на несколько независимых и параллельно выполняющихся потоков, что существенно ускоряет работу СУБД. Для правильного конфигурирования параметров партиционирования необходимо, чтобы в каждом потоке было примерно одинаковое количество записей.
+
+* Нужно существующую таблицу `orders` переименовать (например) в `orders_orig` .
+
+* Создать таблицу `orders` заново с `PARTITION BY` (задаёт стратегию секционирования таблицы). Таблица, созданная с этим указанием, называется секционируемой таблицей. Задаваемый в скобках список столбцов или выражений формирует ключ разбиения таблицы.  
+* Создаем пустую таблицу `orders_2` с размером от 0 до 499. 
+`PARTITION OF таблица_родитель { FOR VALUES указание_границ_секции | DEFAULT } `. 
+Создаёт таблицу в виде секции указанной родительской таблицы `orders`. 
+
+* Создаем пустую таблицу `orders_1` с размером от 499 и более.
+* Переносим данные из старой таблицы `orders_orig` в новую секционированную таблицу `orders`.
 
 ```
-test_database=# alter table orders rename to orders_simple;
+test_database=# ALTER TABLE orders RENAME TO orders_orig;
 ALTER TABLE
-test_database=# create table orders (id integer, title varchar(80), price integer) partition by range(price);
+test_database=# CREATE TABLE orders (id integer, title varchar(80), price integer) PARTITION BY RANGE (price);
 CREATE TABLE
-test_database=# create table orders_2 partition of orders for values from (0) to (499);
+test_database=# CREATE TABLE orders_2 PARTITION OF orders FOR VALUES FROM (0) TO (499);
 CREATE TABLE
-test_database=# create table orders_1 partition of orders for values from (499) to (999999999);
+test_database=# CREATE TABLE orders_1 PARTITION OF orders FOR VALUES FROM (499) TO (999999999);
 CREATE TABLE
-test_database=# insert into orders (id, title, price) select * from orders_simple;
+test_database=# INSERT INTO orders (id, title, price) SELECT * FROM orders_orig; 
 INSERT 0 8
-test_database=# 
-test_database=# 
 
+test_database=# 
 ```
-Можно было изначально создать 
+Итого:
+
+![альт](https://i.ibb.co/F3Zq8KJ/Screenshot-16.jpg)
+
+Можно было изначально создать секционированную таблицу с необходимыми значениями, чтобы не разбивать её потом вручную.
 
 ---
 ### Задача 4
 
 Используя утилиту `pg_dump` создайте бекап БД `test_database`.
 
-Как бы вы доработали бэкап-файл, чтобы добавить уникальность значения столбца title для таблиц test_database?
+Как бы вы доработали бэкап-файл, чтобы добавить уникальность значения столбца `title` для таблиц `test_database`?
 
 
 
 ***Ответ:***
+
+Создаём бэкап БД с помощью утилиты `pg_dump`:
 ```
 root@postgresql:/var/lib/postgresql/data# pg_dump -U postgres -d test_database >test_database_dump.sql
 ```
 ![альт](https://i.ibb.co/BfYTB4J/Screenshot-14.jpg)
+
+
+Для уникальности можно создать индекс:
+
+```
+    CREATE INDEX ON orders ((lower(title)));
+```
+
+CREATE INDEX создаёт индексы по указанному столбцу(ам) заданного отношения, которым может быть таблица. Индексы применяются в первую очередь для оптимизации производительности базы данных.
+
+Создание индекса по выражению lower(title), позволяющего эффективно выполнять регистронезависимый поиск:
+(В этом примере можно опустить имя индекса, чтобы имя выбрала система, например orders_lower_idx.)
+
 ---
 
